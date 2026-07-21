@@ -37,7 +37,7 @@ def demo_react():
     )
 
     agent = ReActAgent(llm, executor, max_steps=5)
-    agent.run("华为最新的手机是哪一款？它的主要卖点是什么？")
+    agent.run("哪些因为火灾失控如浏阳烟花的领导和市领导, 泉州鞋厂的领导和市领导后来受到处罚了吗")
 
 
 def demo_plan_solve():
@@ -49,8 +49,7 @@ def demo_plan_solve():
     llm = HelloAgentsLLM()
     agent = PlanAndSolveAgent(llm)
     agent.run(
-        "一个水果店周一卖出了15个苹果。周二卖出的苹果数量是周一的两倍。"
-        "周三卖出的数量比周二少了5个。请问这三天总共卖出了多少个苹果？"
+        "哪些因为火灾失控如浏阳烟花的领导和市领导, 泉州鞋厂的领导和市领导后来受到处罚了吗"
     )
 
 

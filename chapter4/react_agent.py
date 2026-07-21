@@ -16,21 +16,29 @@ from .tools import ToolExecutor
 
 # ==================== 提示词模板 ====================
 REACT_PROMPT_TEMPLATE = """
-请注意，你是一个有能力调用外部工具的智能助手。
+你是一个有能力调用外部工具的智能助手。
 
-可用工具如下:
+## 可用工具
 {tools}
 
-请严格按照以下格式进行回应:
+## 交互规则（极其重要）
+你只能输出 **一轮** 思考和行动，然后等待外部系统返回观察结果。
+**绝对禁止**自己编造 Observation 或连续输出多轮 Action。
+外部系统会把真实的观察结果返回给你，你再据此决定下一步。
 
-Thought: 你的思考过程，用于分析问题、拆解任务和规划下一步行动。
+## 输出格式（严格遵循，只输出一次）
+Thought: 你的思考过程，用于分析当前情况、拆解任务和规划下一步行动。
 Action: 你决定采取的行动，必须是以下格式之一:
-- `{{tool_name}}[{{tool_input}}]`: 调用一个可用工具。
-- `Finish[最终答案]`: 当你认为已经获得最终答案时。
+- `{{tool_name}}[{{tool_input}}]`: 调用一个可用工具（tool_input 仅写搜索关键词，不要附带其他内容）。
+- `Finish[最终答案]`: 当你已经获得足够信息可以回答用户时。
 
-现在，请开始解决以下问题:
+## 当前问题
 Question: {question}
-History: {history}
+
+## 历史记录
+{history}
+
+现在请输出本轮你的 Thought 和 Action（只输出一轮，等待 Observation）:
 """
 
 
@@ -61,6 +69,7 @@ class ReActAgent:
     def _parse_output(self, text: str):
         """
         从模型输出中提取 Thought 和 Action。
+        只取第一个 Action，防止 LLM 在单次回复中自导自演多轮循环。
 
         输入:  "Thought: 需要搜索\nAction: Search[华为最新手机]"
         返回:  ("需要搜索", "Search[华为最新手机]")
@@ -68,7 +77,11 @@ class ReActAgent:
         thought_match = re.search(
             r"Thought:\s*(.*?)(?=\nAction:|$)", text, re.DOTALL
         )
-        action_match = re.search(r"Action:\s*(.*?)$", text, re.DOTALL)
+        # 只取第一个 Action，以换行或 Observation 或第二个 Action 为边界截断
+        action_match = re.search(
+            r"Action:\s*(.*?)(?=\n(?:Observation|Action|Thought):|$)",
+            text, re.DOTALL
+        )
 
         thought = thought_match.group(1).strip() if thought_match else None
         action = action_match.group(1).strip() if action_match else None
@@ -77,6 +90,7 @@ class ReActAgent:
     def _parse_action(self, action_text: str):
         """
         解析 Action 字符串，返回 (工具名, 输入参数)。
+        使用非贪婪匹配，只取第一个方括号对。
 
         输入:  "Search[华为最新手机]"
         返回:  ("Search", "华为最新手机")
@@ -84,7 +98,7 @@ class ReActAgent:
         输入:  "Finish[华为P70 Pro是华为最新手机]"
         返回:  ("Finish", ...)
         """
-        match = re.match(r"(\w+)\[(.*)\]", action_text, re.DOTALL)
+        match = re.match(r"(\w+)\[(.*?)\]", action_text, re.DOTALL)
         if match:
             return match.group(1), match.group(2)
         return None, None

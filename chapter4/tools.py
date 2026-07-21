@@ -1,70 +1,91 @@
 """
 4.2 ReAct 模式的工具定义
-- search: 基于 SerpApi 的网页搜索工具
+- search: 网页搜索工具（Tavily > SerpApi > 模拟兜底）
 - ToolExecutor: 工具注册与执行器
 """
 
 import os
 from typing import Dict, Callable, Any
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def search(query: str) -> str:
     """
-    基于 SerpApi 的网页搜索工具。优先返回答案框或知识图谱内容。
+    网页搜索工具。按优先级自动选择后端：
+      1. Tavily（如果你配置了 TAVILY_API_KEY）
+      2. SerpApi（如果你配置了 SERPAPI_API_KEY）
+      3. 模拟数据（都没配置时，保证演示不中断）
 
-    需要配置 SERPAPI_API_KEY 环境变量（去 https://serpapi.com/ 注册获取免费额度）。
-    如果没有配置，会返回模拟结果让演示继续运行。
+    去 https://www.tavily.com/ 注册获取免费额度。
     """
-    print(f"🔍 正在执行 [SerpApi] 网页搜索: {query}")
+    print(f"🔍 正在执行 [搜索] 网页搜索: {query}")
 
-    api_key = os.getenv("SERPAPI_API_KEY")
-    if not api_key:
-        # 没有配置 API Key 时的模拟返回，方便本地演示
-        return (
-            f"[模拟搜索结果] 关于 '{query}' 的搜索:\n"
-            f"这是一条模拟的搜索结果。\n"
-            f"要获得真实搜索能力，请在 .env 中配置 SERPAPI_API_KEY。\n"
-            f"注册地址: https://serpapi.com/"
-        )
+    # ---- 后端 1：Tavily ----
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if tavily_key:
+        try:
+            from tavily import TavilyClient
 
-    try:
-        from serpapi import SerpApiClient
-
-        params = {
-            "engine": "google",
-            "q": query,
-            "api_key": api_key,
-            "gl": "cn",
-            "hl": "zh-cn",
-        }
-        client = SerpApiClient(params)
-        results = client.get_dict()
-
-        # 智能解析：按优先级返回最有价值的信息
-        if "answer_box_list" in results:
-            return "\n".join(results["answer_box_list"])
-        if "answer_box" in results and "answer" in results["answer_box"]:
-            return results["answer_box"]["answer"]
-        if (
-            "knowledge_graph" in results
-            and "description" in results["knowledge_graph"]
-        ):
-            return results["knowledge_graph"]["description"]
-        if "organic_results" in results and results["organic_results"]:
+            client = TavilyClient(api_key=tavily_key)
+            result = client.search(query=query, search_depth="basic")
+            if result.get("answer"):
+                return result["answer"]
             snippets = [
-                f"[{i+1}] {res.get('title', '')}\n{res.get('snippet', '')}"
-                for i, res in enumerate(results["organic_results"][:3])
+                f"[{i+1}] {r.get('title', '')}\n{r.get('content', '')}"
+                for i, r in enumerate(result.get("results", [])[:3])
             ]
-            return "\n\n".join(snippets)
+            if snippets:
+                return "\n\n".join(snippets)
+            return f"未找到关于 '{query}' 的相关信息。"
+        except Exception as e:
+            print(f"Tavily 搜索失败: {e}，尝试下一后端...")
 
-        return f"对不起，没有找到关于 '{query}' 的信息。"
+    # ---- 后端 2：SerpApi ----
+    serpapi_key = os.getenv("SERPAPI_API_KEY")
+    if serpapi_key:
+        try:
+            from serpapi import SerpApiClient
 
-    except ImportError:
-        return (
-            "错误: 未安装 serpapi 库。请运行: pip install google-search-results"
-        )
-    except Exception as e:
-        return f"搜索时发生错误: {e}"
+            params = {
+                "engine": "google",
+                "q": query,
+                "api_key": serpapi_key,
+                "gl": "cn",
+                "hl": "zh-cn",
+            }
+            client = SerpApiClient(params)
+            results = client.get_dict()
+
+            if "answer_box_list" in results:
+                return "\n".join(results["answer_box_list"])
+            if "answer_box" in results and "answer" in results["answer_box"]:
+                return results["answer_box"]["answer"]
+            if (
+                "knowledge_graph" in results
+                and "description" in results["knowledge_graph"]
+            ):
+                return results["knowledge_graph"]["description"]
+            if "organic_results" in results and results["organic_results"]:
+                snippets = [
+                    f"[{i+1}] {res.get('title', '')}\n{res.get('snippet', '')}"
+                    for i, res in enumerate(results["organic_results"][:3])
+                ]
+                return "\n\n".join(snippets)
+            return f"未找到关于 '{query}' 的信息。"
+        except ImportError:
+            print("SerpApi 未安装，跳过...")
+        except Exception as e:
+            print(f"SerpApi 搜索失败: {e}")
+
+    # ---- 兜底：模拟数据 ----
+    return (
+        f"[模拟搜索结果] 关于 '{query}' 的搜索:\n"
+        f"这是一条模拟的搜索结果。\n"
+        f"要获得真实搜索能力，请在 .env 中配置 TAVILY_API_KEY（推荐）或 SERPAPI_API_KEY。\n"
+        f"Tavily 注册地址: https://www.tavily.com/"
+    )
 
 
 class ToolExecutor:
