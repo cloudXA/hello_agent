@@ -94,11 +94,29 @@ class ToolExecutor:
     def __init__(self):
         self.tools: Dict[str, Dict[str, Any]] = {}
 
-    def registerTool(self, name: str, description: str, func: Callable):
-        """向工具箱中注册一个新工具。"""
+    def registerTool(
+        self,
+        name: str,
+        description: str,
+        func: Callable,
+        parameters: Dict[str, Any] = None,
+    ):
+        """
+        向工具箱中注册一个新工具。
+
+        参数:
+            name: 工具名称
+            description: 工具描述
+            func: 工具执行函数
+            parameters: JSON Schema 格式的参数定义（用于 function calling）
+        """
         if name in self.tools:
             print(f"警告: 工具 '{name}' 已存在，将被覆盖。")
-        self.tools[name] = {"description": description, "func": func}
+        self.tools[name] = {
+            "description": description,
+            "func": func,
+            "parameters": parameters or {},
+        }
         print(f"工具 '{name}' 已注册。")
 
     def getTool(self, name: str) -> Callable:
@@ -106,10 +124,52 @@ class ToolExecutor:
         return self.tools.get(name, {}).get("func")
 
     def getAvailableTools(self) -> str:
-        """获取所有可用工具的格式化描述字符串。"""
+        """获取所有可用工具的格式化描述字符串（正则解析版用）。"""
         return "\n".join(
             [f"- {name}: {info['description']}" for name, info in self.tools.items()]
         )
+
+    def to_openai_tools(self) -> list[Dict[str, Any]]:
+        """
+        将已注册的工具转换为 OpenAI function calling 格式。
+
+        返回:
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "description": "网页搜索引擎...",
+                        "parameters": { ... JSON Schema ... }
+                    }
+                },
+                ...
+            ]
+        """
+        tool_specs = []
+        for name, info in self.tools.items():
+            spec = {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": info["description"],
+                    "parameters": info.get("parameters", {}),
+                },
+            }
+            # 如果没提供 parameters，生成一个默认的 query 参数 schema
+            if not spec["function"]["parameters"]:
+                spec["function"]["parameters"] = {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": f"传递给 {name} 工具的输入参数",
+                        }
+                    },
+                    "required": ["query"],
+                }
+            tool_specs.append(spec)
+        return tool_specs
 
 
 if __name__ == "__main__":

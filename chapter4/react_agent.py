@@ -4,6 +4,10 @@
 ReAct 是 Agent 最经典的范式：
   Thought（思考） → Action（行动） → Observation（观察） → 下一轮
 
+两种实现:
+  - ReActAgent（正则解析版）: 用 prompt + 正则提取 Thought/Action
+  - ReActAgentV2（Function Calling 版）: 用 OpenAI 原生 tools API，模型返回结构化 JSON
+
 和第一章 agent_loop.py 的区别：
   - 使用 HelloAgentsLLM（流式输出 + .env 自动配置）
   - 使用 ToolExecutor（工具注册/管理更规范）
@@ -11,6 +15,7 @@ ReAct 是 Agent 最经典的范式：
 """
 
 import re
+import json
 from .llm_client import HelloAgentsLLM
 from .tools import ToolExecutor
 
@@ -163,6 +168,126 @@ class ReActAgent:
             # 6. 更新历史
             self.history.append(f"Action: {action}")
             self.history.append(f"Observation: {observation}")
+
+        print("已达到最大步数，流程终止。")
+        return None
+
+
+# ==================== V2: Function Calling 版 ====================
+
+SYSTEM_PROMPT_V2 = """你是一个有能力调用外部工具的智能助手。
+
+## 工作方式
+你可以使用系统提供的工具来获取信息，帮助用户解答问题。
+每一步调用工具后，系统会将真实的观察结果返回给你，你再据此决定下一步。
+
+## 重要规则
+- 如果工具返回的信息不足以回答问题，可以继续调用其他工具
+- 信息充分时，直接给出最终答案
+- 不确定的信息要明确标注"不确定"，不编造不存在的结论
+"""
+
+
+class ReActAgentV2:
+    """
+    ReAct V2：使用 OpenAI 原生 function calling，零正则解析。
+
+    与 ReActAgent（正则版）的对比:
+
+    ┌──────────────────┬─────────────────────┬───────────────────────┐
+    │ 维度             │ ReActAgent (正则)    │ ReActAgentV2 (FC)     │
+    ├──────────────────┼─────────────────────┼───────────────────────┤
+    │ 工具传递方式      │ Prompt 文本拼接       │ API tools 参数         │
+    │ 输出格式          │ 自然语言 + 正则提取   │ 结构化 JSON            │
+    │ 参数约束          │ 无（靠 prompt 约定）   │ JSON Schema 约束       │
+    │ 解析失败概率      │ 中等（格式漂移）       │ 极低（API 保证）        │
+    │ 多工具并行调用    │ 不支持               │ 原生支持               │
+    │ 模型要求          │ 任何 LLM             │ 支持 function calling  │
+    └──────────────────┴─────────────────────┴───────────────────────┘
+
+    使用方式:
+        llm = HelloAgentsLLM()
+        executor = ToolExecutor()
+        executor.registerTool("Search", "网页搜索", search)
+        agent = ReActAgentV2(llm, executor)
+        agent.run("华为最新手机是哪一款？")
+    """
+
+    def __init__(
+        self,
+        llm_client: HelloAgentsLLM,
+        tool_executor: ToolExecutor,
+        max_steps: int = 5,
+    ):
+        self.llm_client = llm_client
+        self.tool_executor = tool_executor
+        self.max_steps = max_steps
+
+    def run(self, question: str):
+        """运行 function calling 驱动的 ReAct 循环"""
+        # 构建 OpenAI tools 格式
+        tools = self.tool_executor.to_openai_tools()
+
+        # 初始化消息列表：system prompt + 用户问题
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT_V2},
+            {"role": "user", "content": question},
+        ]
+
+        print(f"\n{'='*50}")
+        print(f"问题: {question}")
+        print(f"可用工具: {[t['function']['name'] for t in tools]}")
+
+        for step in range(1, self.max_steps + 1):
+            print(f"\n{'='*50}")
+            print(f"--- 第 {step} 步 ---")
+
+            # 1. 调用 LLM（带 tools 定义）
+            response_msg = self.llm_client.think_with_tools(
+                messages=messages, tools=tools
+            )
+            if not response_msg:
+                print("错误: LLM 未能返回有效响应。")
+                break
+
+            # 2. 如果模型直接返回文本（无 tool_calls），就是最终答案
+            if not response_msg.tool_calls:
+                final_answer = response_msg.content or ""
+                print(f"🎉 最终答案: {final_answer}")
+                return final_answer
+
+            # 3. 处理 tool_calls：执行工具并收集结果
+            # 将模型的 assistant 消息加入历史
+            messages.append(response_msg)
+
+            for tool_call in response_msg.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+
+                # 对于单参数 search(query)，取第一个参数值
+                tool_input = (
+                    tool_args.get("query", "")
+                    or next(iter(tool_args.values()), "")
+                )
+
+                print(f"💭 思考: 需要调用 {tool_name} 工具")
+                print(f"🎬 行动: {tool_name}({tool_args})")
+
+                # 4. 执行工具
+                tool_function = self.tool_executor.getTool(tool_name)
+                if not tool_function:
+                    observation = f"错误: 未找到名为 '{tool_name}' 的工具。"
+                else:
+                    observation = tool_function(tool_input)
+
+                print(f"👀 观察: {observation[:200]}...")
+
+                # 5. 将工具结果作为 tool 消息追加
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": observation,
+                })
 
         print("已达到最大步数，流程终止。")
         return None
